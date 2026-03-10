@@ -1,3 +1,4 @@
+
 #!/usr/bin/env node
 
 const { spawn } = require('child_process');
@@ -20,12 +21,6 @@ const claude = spawn('claude', [
 // 处理进程退出
 claude.on('close', (code) => {
   process.exit(code || 0);
-});
-
-// 处理进程错误
-claude.on('error', (err) => {
-  console.error('无法启动 Claude CLI:', err.message);
-  process.exit(1);
 });
 
 // 处理进程错误
