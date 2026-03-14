@@ -55,6 +55,14 @@ function saveSession(cli, sessionName, sessionId) {
 }
 
 /**
+ * 生成临时输出文件路径
+ */
+function getOutputPath(cli, sessionName) {
+  ensureSessionDir();
+  return path.join(SESSION_DIR, `${cli}-${sessionName}.last-message.txt`);
+}
+
+/**
  * 调用 Claude CLI（支持会话）
  */
 function invokeClaude(prompt, sessionName = 'default') {
@@ -127,11 +135,28 @@ function invokeClaude(prompt, sessionName = 'default') {
 }
 
 /**
- * 调用 OpenCode CLI
+ * 调用 OpenCode CLI（支持会话）
  */
-function invokeOpenCode(prompt) {
+function invokeOpenCode(prompt, sessionName = 'default') {
   return new Promise((resolve, reject) => {
-    const child = spawn('opencode', ['run', prompt], {
+    const args = ['run'];
+
+    // 如果指定了 session 名称，加载会话 ID
+    if (sessionName && sessionName !== 'default') {
+      const sessionId = loadSession('opencode', sessionName);
+      if (sessionId) {
+        args.push('--session', sessionId);
+        console.error(`[会话] 继续: ${sessionName} (${sessionId})`);
+      } else {
+        console.error(`[会话] 新建: ${sessionName}`);
+      }
+    }
+
+    if (prompt) {
+      args.push(prompt);
+    }
+
+    const child = spawn('opencode', args, {
       stdio: 'inherit'
     });
 
@@ -146,6 +171,89 @@ function invokeOpenCode(prompt) {
 }
 
 /**
+ * 调用 Codex CLI（支持会话）
+ */
+function invokeCodex(prompt, sessionName = 'default') {
+  return new Promise((resolve, reject) => {
+    const sessionId = loadSession('codex', sessionName);
+    const outputPath = getOutputPath('codex', sessionName);
+    const args = sessionId
+      ? ['exec', 'resume', sessionId, prompt, '--json', '-o', outputPath]
+      : ['exec', prompt, '--json', '-o', outputPath];
+
+    const child = spawn('codex', args);
+    let capturedSessionId = sessionId;
+    let stdoutBuffer = '';
+    let stderrBuffer = '';
+
+    child.stdout.on('data', (data) => {
+      stdoutBuffer += data.toString();
+      const lines = stdoutBuffer.split('\n');
+      stdoutBuffer = lines.pop() || '';
+
+      lines.forEach((line) => {
+        if (!line.trim()) {
+          return;
+        }
+
+        try {
+          const event = JSON.parse(line);
+
+          if (event.type === 'thread.started' && event.thread_id) {
+            capturedSessionId = event.thread_id;
+          }
+        } catch (err) {
+          // 忽略非 JSON 行
+        }
+      });
+    });
+
+    child.stderr.on('data', (data) => {
+      stderrBuffer += data.toString();
+    });
+
+    child.on('close', (code) => {
+      if (stdoutBuffer.trim()) {
+        try {
+          const event = JSON.parse(stdoutBuffer);
+          if (event.type === 'thread.started' && event.thread_id) {
+            capturedSessionId = event.thread_id;
+          }
+        } catch (err) {
+          // 忽略非 JSON 行
+        }
+      }
+
+      if (capturedSessionId) {
+        saveSession('codex', sessionName, capturedSessionId);
+      }
+
+      let hasMessage = false;
+      if (fs.existsSync(outputPath)) {
+        const message = fs.readFileSync(outputPath, 'utf8').trimEnd();
+        if (message) {
+          hasMessage = true;
+          process.stdout.write(message);
+        }
+        process.stdout.write('\n');
+      }
+
+      if (code && !hasMessage) {
+        const errorMessage = stderrBuffer.trim() || 'Codex 执行失败';
+        reject(new Error(errorMessage));
+        return;
+      }
+
+      resolve(code || 0);
+    });
+
+    child.on('error', (err) => {
+      reject(new Error(`无法启动 Codex: ${err.message}`));
+    });
+  });
+}
+
+/**
  * 统一调用接口
  */
 function invoke(cli, prompt, sessionName = 'default') {
@@ -153,6 +261,8 @@ function invoke(cli, prompt, sessionName = 'default') {
     return invokeClaude(prompt, sessionName);
   } else if (cli === 'opencode') {
     return invokeOpenCode(prompt);
+  } else if (cli === 'codex') {
+    return invokeCodex(prompt, sessionName);
   } else {
     return Promise.reject(new Error(`不支持的 CLI: ${cli}`));
   }
@@ -160,20 +270,82 @@ function invoke(cli, prompt, sessionName = 'default') {
 
 // CLI 入口
 if (require.main === module) {
-  const cli = process.argv[2];
-  const prompt = process.argv[3];
-  const sessionName = process.argv[4] || 'default';
+  const args = process.argv.slice(2);
+  
+  // 兼容 invoke.js 的简单调用: node invoke-session.js <cli> "你的问题"
+  if (args.length === 2 && !args[0].startsWith('-') && !args[1].startsWith('-')) {
+    const cli = args[0];
+    const prompt = args[1];
+    
+    if (cli !== 'claude' && cli !== 'opencode' && cli !== 'codex') {
+      console.error('错误: 不支持的 CLI');
+      process.exit(1);
+    }
+    
+    invoke(cli, prompt)
+      .then(code => process.exit(code))
+      .catch(err => {
+        console.error('错误:', err.message);
+        process.exit(1);
+      });
+    return;
+  }
+
+  const cli = args[0];
+
+  // 解析 --session / --resume 和 prompt
+  let sessionName = null;
+  let resume = false;
+  let prompt = null;
+
+  for (let i = 1; i < args.length; i++) {
+    if (args[i] === '--session' && args[i + 1]) {
+      sessionName = args[++i];
+    } else if (args[i] === '--resume' && args[i + 1]) {
+      sessionName = args[++i];
+      resume = true;
+    } else if (!prompt) {
+      prompt = args[i];
+    }
+  }
 
   if (!cli || !prompt) {
-    console.error('用法: node invoke-session.js <claude|opencode> "你的问题" [会话名称]');
+    console.error('用法:');
+    console.error('  简单调用:    node invoke-session.js <cli> "你的问题"');
+    console.error('  新建会话:    node invoke-session.js <cli> --session <名称> "你的问题"');
+    console.error('  恢复会话:    node invoke-session.js <cli> --resume <名称> "继续的问题"');
     console.error('\n示例:');
-    console.error('  node invoke-session.js claude "你好" my-chat');
-    console.error('  node invoke-session.js claude "继续" my-chat');
-    console.error('  node invoke-session.js opencode "快速排序"');
+    console.error('  node invoke-session.js claude "什么是attention机制"');
+    console.error('  node invoke-session.js opencode --session "讨论" "继续讲讲multi-head"');
+    console.error('  node invoke-session.js claude --resume "讨论transformer" "继续讲讲multi-head"');
     process.exit(1);
   }
 
-  invoke(cli, prompt, sessionName)
+  // --resume 时必须有已保存的会话
+  if (resume) {
+    if (!sessionName) {
+      console.error('错误: --resume 需要指定会话名称');
+      process.exit(1);
+    }
+    const existingId = loadSession(cli, sessionName);
+    if (!existingId) {
+      console.error(`错误: 找不到会话 "${sessionName}"，请先用 --session 创建`);
+      process.exit(1);
+    }
+  }
+
+  // --session 新建时，如果��名会话已存在则警告覆盖
+  if (sessionName && !resume) {
+    const existingId = loadSession(cli, sessionName);
+    if (existingId) {
+      console.error(`[会话] 警告: "${sessionName}" 已存在，将创建新会话覆盖旧的`);
+      // 删除旧会话文件，强制新建
+      const sessionPath = getSessionPath(cli, sessionName);
+      fs.unlinkSync(sessionPath);
+    }
+  }
+
+  invoke(cli, prompt, sessionName || 'default')
     .then(code => process.exit(code))
     .catch(err => {
       console.error('错误:', err.message);
