@@ -1,9 +1,9 @@
 #!/usr/bin/env node
 
 const { spawn } = require('child_process');
+const { randomUUID } = require('crypto');
 const fs = require('fs');
 const path = require('path');
-const readline = require('readline');
 const {
   ensureSessionDir,
   readSharedContext,
@@ -85,66 +85,55 @@ async function invokeClaude(prompt, sessionName = 'default', options = {}) {
 
   return new Promise((resolve, reject) => {
     const sessionId = loadSession('claude', sessionName);
+    const targetSessionId = sessionId || randomUUID();
     const args = [
       '-p', injectedPrompt,
       '--permission-mode', 'bypassPermissions',
-      '--output-format', 'stream-json',
-      '--verbose'
+      '--output-format', 'text'
     ];
 
     if (sessionId) {
       console.error(`[会话] 继续: ${sessionName}`);
-      args.push('--resume', sessionId);
+      args.push('--resume', targetSessionId);
     } else {
       console.error(`[会话] 新建: ${sessionName}`);
+      args.push('--session-id', targetSessionId);
     }
 
-    const claude = spawn('claude', args);
-    let capturedSessionId = null;
-    let responseText = '';
-
-    // 逐行解析输出
-    const rl = readline.createInterface({
-      input: claude.stdout,
-      crlfDelay: Infinity
+    const claude = spawn('claude', args, {
+      stdio: ['ignore', 'pipe', 'pipe']
     });
 
-    rl.on('line', (line) => {
-      try {
-        const data = JSON.parse(line);
+    let stdoutText = '';
+    let stderrText = '';
 
-        // 捕获 session_id
-        if (data.session_id && !capturedSessionId) {
-          capturedSessionId = data.session_id;
-        }
-
-        // 输出 assistant 消息
-        if (data.type === 'assistant' && data.message?.content) {
-          data.message.content.forEach((block) => {
-            if (block.type === 'text' && block.text) {
-              responseText += block.text;
-              process.stdout.write(block.text);
-            }
-          });
-        }
-      } catch (err) {
-        // 忽略非 JSON 行
-      }
+    claude.stdout.on('data', (data) => {
+      const text = data.toString();
+      stdoutText += text;
+      process.stdout.write(text);
     });
 
     claude.stderr.on('data', (data) => {
-      process.stderr.write(data.toString());
+      const text = data.toString();
+      stderrText += text;
+      process.stderr.write(text);
     });
 
     claude.on('close', async (code) => {
       try {
-        if (capturedSessionId) {
-          saveSession('claude', sessionName, capturedSessionId);
-          console.error(`\n[会话] 已保存: ${capturedSessionId}`);
+        const responseText = stdoutText.trim() || stderrText.trim();
+
+        if (targetSessionId && responseText) {
+          saveSession('claude', sessionName, targetSessionId);
         }
 
-        process.stdout.write('\n');
         await logSharedInteraction('claude', prompt, responseText);
+
+        if (code && !responseText) {
+          reject(new Error('Claude 执行失败'));
+          return;
+        }
+
         resolve(code || 0);
       } catch (err) {
         reject(err);
