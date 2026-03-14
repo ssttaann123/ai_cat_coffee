@@ -8,6 +8,7 @@ const {
   ensureSessionDir,
   readSharedContext,
   appendSharedContext,
+  pruneSessionArtifacts,
   formatContextForPrompt
 } = require('./shared-context');
 
@@ -50,6 +51,7 @@ function saveSession(cli, sessionName, sessionId) {
     sessionId,
     lastUsed: new Date().toISOString()
   }, null, 2));
+  pruneSessionArtifacts();
 }
 
 /**
@@ -57,6 +59,7 @@ function saveSession(cli, sessionName, sessionId) {
  */
 function getOutputPath(cli, sessionName) {
   ensureSessionDir();
+  pruneSessionArtifacts();
   return path.join(SESSION_DIR, `${cli}-${sessionName}.last-message.txt`);
 }
 

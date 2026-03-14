@@ -42,7 +42,8 @@ cat_cat_coffe/
 │   ├── minimal-codex.js      # Codex CLI 调用脚本
 │   ├── minimal-opencode.js   # OpenCode CLI 调用脚本
 │   ├── invoke.js             # 统一调用入口
-│   └── invoke-session.js     # 带会话的统一调用入口
+│   ├── invoke-session.js     # 带会话的统一调用入口
+│   └── cleanup-sessions.js   # 清理历史会话文件
 ├── skills/                    # 开发技巧库（工程启动时读取）
 │   ├── README.md             # 技巧索引
 │   ├── workflow.md           # 协作流程技巧
@@ -94,6 +95,16 @@ node scripts/invoke.js codex "请直接修复这个报错"
 ```bash
 node scripts/invoke-session.js claude "你好" my-chat
 node scripts/invoke-session.js codex "继续修改刚才的功能" my-task
+```
+
+### 清理历史会话
+
+```bash
+# 删除 .sessions 下全部历史文件
+node scripts/cleanup-sessions.js
+
+# 保留 shared-context.jsonl，仅删除各 agent 的 session 文件
+node scripts/cleanup-sessions.js --keep-shared-context
 ```
 
 ## 🔄 协作流程
