@@ -367,6 +367,7 @@ if (require.main === module) {
 
   // 解析 --session / --resume / --context-limit 和 prompt
   let sessionName = null;
+  let explicitSessionMode = null;
   let resume = false;
   let prompt = null;
   let contextLimit = DEFAULT_CONTEXT_LIMIT;
@@ -374,9 +375,11 @@ if (require.main === module) {
   for (let i = 1; i < args.length; i++) {
     if (args[i] === '--session' && args[i + 1]) {
       sessionName = args[++i];
+      explicitSessionMode = 'session';
     } else if (args[i] === '--resume' && args[i + 1]) {
       sessionName = args[++i];
       resume = true;
+      explicitSessionMode = 'resume';
     } else if (args[i] === '--context-limit' && args[i + 1]) {
       const parsed = Number.parseInt(args[++i], 10);
       if (!Number.isInteger(parsed) || parsed <= 0) {
@@ -386,17 +389,22 @@ if (require.main === module) {
       contextLimit = parsed;
     } else if (!prompt) {
       prompt = args[i];
+    } else if (!sessionName && !args[i].startsWith('-')) {
+      // 兼容位置参数: node invoke-session.js <cli> "问题" <会话名>
+      sessionName = args[i];
     }
   }
 
   if (!cli || !prompt) {
     console.error('用法:');
     console.error('  简单调用:    node invoke-session.js <cli> "你的问题"');
+    console.error('  位置会话:    node invoke-session.js <cli> "你的问题" <会话名>');
     console.error('  新建会话:    node invoke-session.js <cli> --session <名称> "你的问题"');
     console.error('  恢复会话:    node invoke-session.js <cli> --resume <名称> "继续的问题"');
     console.error('  限制上下文:  node invoke-session.js <cli> --context-limit <n> "你的问题"');
     console.error('\n示例:');
     console.error('  node invoke-session.js claude "什么是attention机制"');
+    console.error('  node invoke-session.js claude "继续刚才的问题" my-task');
     console.error('  node invoke-session.js opencode --session "讨论" "继续讲讲multi-head"');
     console.error('  node invoke-session.js claude --resume "讨论transformer" "继续讲讲multi-head"');
     console.error('  node invoke-session.js codex --context-limit 20 "继续实现接口"');
@@ -416,8 +424,8 @@ if (require.main === module) {
     }
   }
 
-  // --session 新建时，如果同名会话已存在则警告覆盖
-  if (sessionName && !resume) {
+  // 仅在显式 --session 时保持覆盖行为
+  if (sessionName && explicitSessionMode === 'session' && !resume) {
     const existingId = loadSession(cli, sessionName);
     if (existingId) {
       console.error(`[会话] 警告: "${sessionName}" 已存在，将创建新会话覆盖旧的`);
